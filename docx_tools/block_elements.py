@@ -104,8 +104,58 @@ def _remove_table_borders(table):
         tblPr.remove(existing)
     tblPr.append(borders)
 
+_HEX_COLOR_RE = re.compile(r'^[0-9A-Fa-f]{6}$')
+
+
+def _shade_cell(cell, hex_color):
+    """Apply solid background shading to *cell* (``w:shd val="clear"``).
+
+    ``val="clear"`` (not ``"solid"``) is required — ``"solid"`` renders as a
+    black fill that overrides ``w:fill`` on some clients (Word desktop is
+    forgiving, but Google Docs/many web viewers are not).
+    """
+    tcPr = cell._tc.get_or_add_tcPr()
+    existing = tcPr.find(qn('w:shd'))
+    if existing is not None:
+        tcPr.remove(existing)
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), hex_color)
+    tcPr.append(shd)
+
+
+def _apply_table_shading(table, rows, cols, shading):
+    """Apply a ``shade`` table directive: ``header=<hex>`` and/or ``alt=<hex>``.
+
+    ``header=D5E8F0`` shades row 0 (the header row); ``alt=F2F2F2`` shades
+    every other data row (zebra striping) starting with the first data row.
+    Arbitrary per-cell targeting is not supported in v1.
+    """
+    if not shading or rows == 0 or cols == 0:
+        return
+    for token in shading.split():
+        key, sep, value = token.partition('=')
+        if not sep:
+            continue
+        key = key.strip().lower()
+        value = value.strip().lstrip('#')
+        if not _HEX_COLOR_RE.match(value):
+            logger.warning("Invalid color %r in 'shade' directive token %r", value, token)
+            continue
+        if key == 'header':
+            for j in range(cols):
+                _shade_cell(table.cell(0, j), value)
+        elif key == 'alt':
+            for i in range(1, rows, 2):
+                for j in range(cols):
+                    _shade_cell(table.cell(i, j), value)
+        else:
+            logger.warning("Unknown 'shade' directive key %r", key)
+
+
 def add_table_to_doc(table_data, doc, col_alignments=None, borderless=False,
-                     col_widths=None, table_style='Table Grid'):
+                     col_widths=None, table_style='Table Grid', shading=None):
     """Add table data to Word document.
     Args:
         table_data: List of rows, each a list of cell text strings.
@@ -116,6 +166,8 @@ def add_table_to_doc(table_data, doc, col_alignments=None, borderless=False,
             Values are normalized to sum to 100% of available page width.
         table_style: Word table style name to apply (falls back to the document
             default if the named style is missing).
+        shading: Optional ``shade`` directive value, e.g. ``"header=D5E8F0"``
+            or ``"header=D5E8F0 alt=F2F2F2"``.
     Returns the created ``Table`` object, or ``None`` when the table could
     not be created (empty data or exception).
     """
@@ -131,6 +183,7 @@ def add_table_to_doc(table_data, doc, col_alignments=None, borderless=False,
     apply_style(word_table, table_style, fallback=None)
     if borderless:
         _remove_table_borders(word_table)
+    _apply_table_shading(word_table, rows, cols, shading)
     # Apply column widths if specified
     if col_widths and len(col_widths) >= cols:
         total = sum(col_widths[:cols])
@@ -308,6 +361,22 @@ def add_horizontal_line(doc):
 # ---------------------------------------------------------------------------
 # Images
 # ---------------------------------------------------------------------------
+def _set_image_alt_text(picture, alt_text):
+    """Set the accessible name/description on an inline picture's ``wp:docPr``.
+
+    python-docx exposes no alt-text API, so this reaches into the
+    ``InlineShape``'s underlying ``wp:inline`` element directly (the ``descr``
+    attribute is what Word surfaces as "Alt Text"; ``title`` is set too for
+    viewers that read it instead).
+    """
+    if not alt_text:
+        return
+    docPr = picture._inline.find(qn('wp:docPr'))
+    if docPr is not None:
+        docPr.set('descr', alt_text)
+        docPr.set('title', alt_text)
+
+
 def add_image_to_doc(doc, url, alt_text, max_width_inches=None):
     """Add an image from a URL to the document.
     Downloads the image and inserts it.  On failure inserts an error
@@ -322,8 +391,9 @@ def add_image_to_doc(doc, url, alt_text, max_width_inches=None):
             except Exception:
                 max_width_inches = 5.5
         image_stream, _ = download_image(url)
-        doc.add_picture(image_stream, width=Inches(max_width_inches))
+        picture = doc.add_picture(image_stream, width=Inches(max_width_inches))
         if alt_text:
+            _set_image_alt_text(picture, alt_text)
             caption = doc.add_paragraph()
             caption.add_run(alt_text).italic = True
             caption.alignment = WD_ALIGN_PARAGRAPH.CENTER

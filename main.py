@@ -187,6 +187,17 @@ async def create_word_document(
         "- Images: ![alt text](url)\n"
         "- Code blocks: fence with ``` (or ~~~) on their own lines; content is rendered verbatim in a monospace font and NOT parsed as markdown\n"
         "- Custom style: put <!-- style: Style Name --> on the line directly before a block to render it with that Word style (applies to the next block only — every item of a list, or the table). Unknown styles fall back to the default.\n"
+        "- Table shading: put <!-- shade: header=D5E8F0 --> (or add ' alt=F2F2F2' for zebra striping) on the line before a table; colors are 6-digit hex without '#'\n"
+        "- Named bookmark: put <!-- bookmark: name --> on the line before a block; link to it from anywhere with [text](#name)\n"
+        "- Right-aligned tab stop: put <!-- tab: right --> (optionally 'right dot' for a dot leader) before a paragraph, then use a literal tab character between the label and the trailing text\n"
+        "\n"
+        "DOCUMENT-LEVEL DIRECTIVES (place at the very top of markdown_content, before any content; each on its own line):\n"
+        "- <!-- page: letter|a4|legal --> sets the page size (default a4)\n"
+        "- <!-- orientation: landscape --> rotates the page (combine with 'page' as needed)\n"
+        "- <!-- margin: 1in --> (all sides) or <!-- margin: top=1in bottom=1in left=1.25in right=1.25in --> (units: in, cm, mm, pt)\n"
+        "- <!-- font: Arial --> sets the default body font; <!-- font-size: 12 --> sets its size in points; <!-- heading-font: Arial --> overrides heading fonts only\n"
+        "- <!-- columns: 2 --> (or '2 sep' for a separator line, or 'custom:5400,3240' for explicit DXA widths) lays out the whole body in newspaper-style columns\n"
+        "- <!-- smart-quotes: on --> converts straight quotes/apostrophes to curly typographic quotes everywhere except inside code\n"
         "\n"
         "INLINE FORMATTING (usable in paragraphs, headings, lists, tables, quotes):\n"
         "- **bold**, *italic*, ***bold italic***\n"
@@ -194,7 +205,8 @@ async def create_word_document(
         "- `code` (Courier New font)\n"
         "- ^superscript^ (e.g. x^2^), ~subscript~ (e.g. H~2~O)\n"
         "- ==highlighted text== (yellow background)\n"
-        "- [link text](https://url)\n"
+        "- [link text](https://url) for external links; [link text](#bookmark) for an internal link to a <!-- bookmark: bookmark --> anchor\n"
+        "- [^footnote text] inserts a numbered footnote at the bottom of the page with that text\n"
         "- Nesting: **bold with *italic* inside**, *italic with **bold** inside*\n"
         "- Combinations: **~~bold strikethrough~~**, **__bold underline__**, *~~italic strikethrough~~*\n"
         "- Escaped literals: \\* \\** \\` to render *, **, ` without formatting\n"
@@ -218,6 +230,10 @@ async def create_word_document(
     footer_text: Annotated[Optional[str], Field(description="Text for document footer (bottom of every page). Use {page} for auto page number, {pages} for total pages.", default=None)] = None,
     include_toc: Annotated[Optional[bool], Field(description="If true, inserts a Table of Contents at the beginning of the document. The TOC updates automatically when opened in Word.", default=False)] = False,
     file_name: Annotated[Optional[str], Field(description="Custom filename for the output file (without extension). If not provided, a unique identifier will be used.", default=None)] = None,
+    page_size: Annotated[Optional[str], Field(description="Page size: 'letter', 'a4', or 'legal'. Overrides a '<!-- page: ... -->' directive in markdown_content if both are given. Defaults to A4.", default=None)] = None,
+    orientation: Annotated[Optional[str], Field(description="Page orientation: 'portrait' (default) or 'landscape'. Overrides a '<!-- orientation: ... -->' directive if both are given.", default=None)] = None,
+    default_font: Annotated[Optional[str], Field(description="Default body font family (e.g. 'Arial'). Overrides a '<!-- font: ... -->' directive if both are given. Has no effect on inline `code` runs (always monospace).", default=None)] = None,
+    smart_quotes: Annotated[Optional[bool], Field(description="If true, converts straight quotes/apostrophes to curly typographic quotes (except inside code). Overrides a '<!-- smart-quotes: ... -->' directive if both are given. Defaults to off.", default=None)] = None,
 ) -> str:
     """
     Converts markdown to professionally formatted Word document.
@@ -237,6 +253,10 @@ async def create_word_document(
             footer_text=footer_text,
             include_toc=include_toc or False,
             file_name=file_name,
+            page_size=page_size,
+            orientation=orientation,
+            default_font=default_font,
+            smart_quotes=smart_quotes,
         )
         logger.info("Word document uploaded successfully")
         return result

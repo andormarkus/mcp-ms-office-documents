@@ -55,7 +55,8 @@ _INLINE_FORMAT_RE = re.compile(
     r'|`[^`]+`'                           # `code`
     r'|\^[^^]+\^'                         # ^superscript^
     r'|~(?!~)[^~]+~'                      # ~subscript~ (single tilde, not ~~)
-    r'|\[[^\]]*\]\([^)]*\))'             # [link](url)
+    r'|\[\^[^\]]+\]'                      # [^footnote text] (inline footnote)
+    r'|\[[^\]]*\]\([^)]*\))'             # [link](url) — also matches [text](#anchor)
 )
 
 _LINK_RE = re.compile(r'\[(.*?)]\((.*?)\)')        # [link text](url)
@@ -210,6 +211,70 @@ def expand_br_to_block_breaks(text: str) -> str:
         else:
             out.append(line)
     return '\n'.join(out)
+
+
+# ---------------------------------------------------------------------------
+# Smart quotes (opt-in; see apply_smart_quotes)
+# ---------------------------------------------------------------------------
+
+# An opening double/single quote is one preceded by start-of-string, whitespace,
+# an opening bracket, or a dash (covers '("quoted")', '-"quoted"', etc.). Any
+# quote NOT matched here is treated as closing (covers plain closing quotes and
+# apostrophes, e.g. "don't" -> "don't" both render as the same closing glyph).
+_SMART_QUOTE_OPEN_DQUOTE_RE = re.compile(r'(^|[\s(\[{\-])"')
+_SMART_QUOTE_OPEN_SQUOTE_RE = re.compile(r"(^|[\s(\[{\-])'")
+_INLINE_CODE_SPAN_RE = re.compile(r'`[^`]+`')
+
+
+def _convert_smart_quotes_line(line: str) -> str:
+    """Convert straight quotes/apostrophes to curly equivalents in *line*.
+
+    Inline code spans (`` `...` ``) are protected from conversion via a
+    placeholder swap so code samples containing quotes are left verbatim.
+    """
+    if '"' not in line and "'" not in line:
+        return line
+    placeholders = {}
+
+    def _stash(match):
+        key = f'\uE100{len(placeholders)}\uE101'
+        placeholders[key] = match.group(0)
+        return key
+
+    protected = _INLINE_CODE_SPAN_RE.sub(_stash, line)
+    protected = _SMART_QUOTE_OPEN_DQUOTE_RE.sub(lambda m: m.group(1) + '\u201c', protected)
+    protected = protected.replace('"', '\u201d')
+    protected = _SMART_QUOTE_OPEN_SQUOTE_RE.sub(lambda m: m.group(1) + '\u2018', protected)
+    protected = protected.replace("'", '\u2019')
+    for key, original in placeholders.items():
+        protected = protected.replace(key, original)
+    return protected
+
+
+def apply_smart_quotes(content: str) -> str:
+    """Convert straight quotes to curly (typographic) quotes across *content*.
+
+    Applied as a whole-document preprocessing pass (opt-in via the
+    ``smart-quotes`` directive/tool parameter) rather than threaded through
+    every inline-formatting call site. Fenced code blocks are skipped
+    entirely; inline code spans are protected line-by-line (see
+    :func:`_convert_smart_quotes_line`).
+    """
+    if not content or ('"' not in content and "'" not in content):
+        return content
+    out_lines = []
+    in_code = False
+    for line in content.split('\n'):
+        stripped = line.strip()
+        if CODE_FENCE_PATTERN.match(stripped):
+            in_code = not in_code
+            out_lines.append(line)
+            continue
+        if in_code:
+            out_lines.append(line)
+            continue
+        out_lines.append(_convert_smart_quotes_line(line))
+    return '\n'.join(out_lines)
 
 
 def contains_block_markdown(value: str) -> bool:

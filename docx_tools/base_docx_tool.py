@@ -3,25 +3,43 @@ import logging
 from docx import Document
 
 from upload_tools import upload_file
-from .document_features import load_templates, set_header_footer, add_toc
+from .directives import parse_document_directives
+from .document_features import (
+    load_templates, set_header_footer, add_toc,
+    apply_page_setup, apply_default_font, apply_columns,
+)
 from .markdown_processor import process_markdown_content
 from .style_map import load_global_style_map
 
 logger = logging.getLogger(__name__)
 
+_TRUTHY = {'on', 'true', '1', 'yes'}
+
+
+def _is_truthy_directive(value):
+    return (value or '').strip().lower() in _TRUTHY
+
 
 def _markdown_to_doc(markdown_content, title=None, author=None, subject=None,
                      header_text=None, footer_text=None, include_toc=False,
-                     style_map=None):
+                     style_map=None, page_size=None, orientation=None, margin=None,
+                     default_font=None, smart_quotes=None):
     """Convert Markdown content to a python-docx Document object.
 
     This is the core conversion logic, separated from upload concerns so it
     can be used directly in tests or other contexts that need the Document.
 
+    *page_size*/*orientation*/*margin*/*default_font*/*smart_quotes* are tool
+    parameters that override the corresponding top-of-document markdown
+    directives (``<!-- page: letter -->``, ``<!-- orientation: landscape -->``,
+    ``<!-- margin: 1in -->``, ``<!-- font: Arial -->``,
+    ``<!-- smart-quotes: on -->``) when given; see ``docx_tools/directives.py``.
+
     Returns:
         A ``docx.Document`` instance with the rendered content.
     """
     logger.info("Starting markdown_to_doc conversion")
+    directives, body = parse_document_directives(markdown_content or "")
     path = load_templates()
 
     # Create document with or without template
@@ -35,6 +53,12 @@ def _markdown_to_doc(markdown_content, title=None, author=None, subject=None,
     except Exception as e:
         logger.error("Failed to load Word template '%s': %s", path, e, exc_info=True)
         raise RuntimeError(f"Error loading Word template: {e}") from e
+
+    # Document-wide layout settings (page size/orientation/margins, default
+    # font, multi-column) are applied before any content is added.
+    apply_page_setup(doc, directives, page_size=page_size, orientation=orientation, margin=margin)
+    apply_default_font(doc, directives, default_font=default_font, template_in_use=bool(path))
+    apply_columns(doc, directives)
 
     # Set document metadata
     if title:
@@ -57,9 +81,13 @@ def _markdown_to_doc(markdown_content, title=None, author=None, subject=None,
     # Parse markdown content into document
     if style_map is None:
         style_map = load_global_style_map()
+    smart_quotes_enabled = (
+        smart_quotes if smart_quotes is not None
+        else _is_truthy_directive(directives.get('smart-quotes'))
+    )
     try:
-        process_markdown_content(doc, markdown_content, return_elements=False,
-                                 style_map=style_map)
+        process_markdown_content(doc, body, return_elements=False,
+                                 style_map=style_map, smart_quotes=smart_quotes_enabled)
     except Exception as e:
         logger.error(f"Error in parsing markdown: {e}", exc_info=True)
         raise RuntimeError(f"Error in parsing markdown: {e}") from e
@@ -70,7 +98,8 @@ def _markdown_to_doc(markdown_content, title=None, author=None, subject=None,
 
 def markdown_to_word(markdown_content, title=None, author=None, subject=None,
                      header_text=None, footer_text=None, include_toc=False, file_name=None,
-                     style_map=None):
+                     style_map=None, page_size=None, orientation=None, margin=None,
+                     default_font=None, smart_quotes=None):
     """Convert Markdown to Word document, save to memory and upload."""
     doc = _markdown_to_doc(
         markdown_content,
@@ -81,6 +110,11 @@ def markdown_to_word(markdown_content, title=None, author=None, subject=None,
         footer_text=footer_text,
         include_toc=include_toc,
         style_map=style_map,
+        page_size=page_size,
+        orientation=orientation,
+        margin=margin,
+        default_font=default_font,
+        smart_quotes=smart_quotes,
     )
 
     # Save the document to BytesIO and upload

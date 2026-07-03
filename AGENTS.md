@@ -36,6 +36,16 @@ main.py                  ← Registers all MCP tools on a single FastMCP instanc
 - **Error handling in tools**: raise `fastmcp.exceptions.ToolError` for user-facing errors; use `RuntimeError` in upload/backend layers.
 - **Logging**: use `logging.getLogger(__name__)` everywhere. Level controlled by `DEBUG` env var only.
 
+## DOCX-Specific Conventions
+
+- **Markdown directives** are parsed as `<!-- key: value -->` lines. There are two tiers, both handled by `docx_tools/patterns.py`'s `COMMENT_DIRECTIVE_PATTERN`:
+  - **Per-block directives** (`markdown_processor.py`): one or more directive lines immediately above a block attach options to that block only — `borderless`, `widths`, `style`, `shade` (table shading, e.g. `header=D5E8F0 alt=F2F2F2`), `bookmark` (wraps the block in a named `w:bookmarkStart`/`End` pair), `tab` (configures an explicit tab stop, e.g. `right` or `right dot`, on the following paragraph).
+  - **Document-level directives** (`docx_tools/directives.py::parse_document_directives`): recognised only in the leading run of directive lines at the very top of the markdown, before any real content — `page` (`letter`/`a4`/`legal`), `orientation` (`landscape`), `margin` (`1in` or `top=1in bottom=1in ...`), `font`/`font-size`/`heading-font`, `columns` (`2`, `2 sep`, or `custom:5400,3240`), `smart-quotes` (`on`). These are extracted and stripped from the content before block parsing; unrecognized keys in that same leading run (e.g. a `borderless` meant for the first table) are left in place. Applied in `base_docx_tool.py::_markdown_to_doc` via `document_features.py`'s `apply_page_setup`/`apply_default_font`/`apply_columns` — tool parameters of the same name (`page_size`, `orientation`, `default_font`, `smart_quotes`) override the directive when both are given.
+- **Footnotes**: inline `[^footnote text]` syntax (not a two-step id/definition — the bracket contains the footnote body directly). Implemented by `document_features.py`'s `insert_footnote`/`add_footnote`/`add_footnote_reference_run`, which build `word/footnotes.xml` directly via `docx.opc.part.XmlPart` since python-docx (1.2.0) has no footnote API (unlike `NumberingPart`/`CommentsPart`).
+- **Internal hyperlinks**: `[text](#bookmark)` — a URL starting with `#` emits `w:anchor` instead of an external relationship (`inline_formatting.py::add_hyperlink`). Pair with a `<!-- bookmark: bookmark -->` directive to define the target.
+- **Smart quotes** (`patterns.py::apply_smart_quotes`) are applied as a single whole-document preprocessing pass (opt-in — off by default so existing content asserting on literal quote characters is unaffected), not threaded through every inline-formatting call site. Fenced code blocks are skipped entirely; inline code spans are protected via a placeholder swap.
+- All of the above are **pure Python** (`python-docx` + direct `OxmlElement`/`opc` manipulation) — no LibreOffice or other external binary is used anywhere in `docx_tools/`.
+
 ## Adding a New Document Tool
 
 1. Create `<type>_tools/` package with `__init__.py`, `base_<type>_tool.py`, and optional `helpers.py`.

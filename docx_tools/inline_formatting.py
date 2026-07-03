@@ -34,13 +34,22 @@ _SAFE_HTML_ENTITIES = (
 )
 def add_hyperlink(paragraph, text, url, color="0000FF", underline=True):
     """Adds a hyperlink to a paragraph.
+
+    A URL starting with ``#`` is treated as an internal link to a bookmark
+    (``w:anchor``) rather than an external relationship (``r:id``) — e.g.
+    ``[See Chapter 1](#chapter1)`` links to a ``<!-- bookmark: chapter1 -->``
+    placed earlier in the document.
+
     Falls back to plain text if hyperlink creation fails.
     """
     try:
-        part = paragraph.part
-        r_id = part.relate_to(url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
         hyperlink = OxmlElement('w:hyperlink')
-        hyperlink.set(qn('r:id'), r_id)
+        if url.startswith('#'):
+            hyperlink.set(qn('w:anchor'), url[1:])
+        else:
+            part = paragraph.part
+            r_id = part.relate_to(url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+            hyperlink.set(qn('r:id'), r_id)
         new_run = OxmlElement('w:r')
         rPr = OxmlElement('w:rPr')
         if underline:
@@ -111,7 +120,14 @@ def parse_inline_formatting(text, paragraph, bold=False, italic=False):
     for line_idx, line_part in enumerate(line_parts):
         if not line_part and line_idx == len(line_parts) - 1:
             continue
-        _parse_formatting_segment(line_part, paragraph, bold, italic, escape_ctx)
+        # A literal tab character marks a Word tab stop (``w:tab``), not text —
+        # used with the `<!-- tab: right --> ` directive for right-aligned
+        # trailing text (dates, dot leaders) on the same line as a label.
+        tab_segments = line_part.split('\t')
+        for seg_idx, segment in enumerate(tab_segments):
+            _parse_formatting_segment(segment, paragraph, bold, italic, escape_ctx)
+            if seg_idx < len(tab_segments) - 1:
+                paragraph.add_run().add_tab()
         if line_idx < len(line_parts) - 1:
             paragraph.add_run().add_break()
 
@@ -158,5 +174,14 @@ def _parse_formatting_segment(text, paragraph, bold=False, italic=False, escape_
                 link_text = _restore_escapes(link_match.group(1), escape_ctx)
                 link_url = _restore_escapes(link_match.group(2), escape_ctx)
                 add_hyperlink(paragraph, link_text, link_url)
+        elif part.startswith('[^') and part.endswith(']'):
+            footnote_text = _restore_escapes(part[2:-1], escape_ctx)
+            from .document_features import insert_footnote  # deferred to avoid cycle
+            try:
+                insert_footnote(paragraph, footnote_text)
+            except Exception:
+                logger.warning("Failed to insert footnote %r; rendering as plain text.",
+                               footnote_text, exc_info=True)
+                paragraph.add_run(f'[{footnote_text}]')
         else:
             _apply_formatting(paragraph.add_run(_restore_escapes(part, escape_ctx)), bold, italic)

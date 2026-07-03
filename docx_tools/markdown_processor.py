@@ -20,6 +20,7 @@ from .patterns import (
     ordered_list_is_genuine,
     normalize_escaped_newlines,
     expand_br_to_block_breaks,
+    apply_smart_quotes,
 )
 from .inline_formatting import parse_inline_formatting
 from .block_elements import (
@@ -36,6 +37,7 @@ from .style_map import (
     add_mapped_heading,
     apply_style_to_block_element,
 )
+from .document_features import apply_tab_stop, wrap_with_bookmark
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +59,7 @@ def _continues_ordered_run(stripped, ordered_run) -> bool:
 
 
 def process_markdown_content(doc, content, return_elements=False,
-                             style_map=DEFAULT_STYLE_MAP):
+                             style_map=DEFAULT_STYLE_MAP, smart_quotes=False):
     """Process full markdown content with all features: spacing, soft breaks, blocks.
     This is the single source of truth for converting a markdown string into
     document elements. Both the base tool and dynamic template placeholder
@@ -67,6 +69,10 @@ def process_markdown_content(doc, content, return_elements=False,
         content: Raw markdown text (may contain newlines).
         return_elements: If True, created elements are detached from the doc body
             and returned (for reinsertion at a specific position).
+        smart_quotes: If True, converts straight quotes/apostrophes to curly
+            (typographic) equivalents everywhere except inside inline code
+            spans and fenced code blocks. Opt-in (default False) so existing
+            content that asserts on literal quote characters is unaffected.
     Returns:
         List of XML elements if return_elements is True, otherwise an empty list.
     """
@@ -77,6 +83,8 @@ def process_markdown_content(doc, content, return_elements=False,
     # Promote <br> that borders block content (lists/headings) to real newlines
     # so such blocks are detected; a prose <br> stays an inline soft break.
     content = expand_br_to_block_breaks(content)
+    if smart_quotes:
+        content = apply_smart_quotes(content)
     lines = content.split('\n')
     n = len(lines)
     i = 0
@@ -264,7 +272,8 @@ def process_markdown_block(doc, lines, start_idx, return_element=True,
                                              col_alignments=col_alignments,
                                              borderless=borderless,
                                              col_widths=col_widths,
-                                             table_style=style_map.table)
+                                             table_style=style_map.table,
+                                             shading=d.get('shade'))
                 if word_table is not None:
                     _collect(word_table._tbl)
                 return next_idx, elements
@@ -377,6 +386,14 @@ def process_markdown_block(doc, lines, start_idx, return_element=True,
                             else [el for el in body if el not in existing])
                 for el in produced:
                     apply_style_to_block_element(doc, el, style_name)
+            # The 'bookmark' directive wraps whatever was produced with a named
+            # bookmark. Only supported on the non-return_element (body) render
+            # path — detached elements (template placeholder insertion) have no
+            # stable siblings to anchor bookmarkStart/End to.
+            bookmark_name = collected.get('bookmark')
+            if bookmark_name and not return_element:
+                produced = [el for el in body if el not in existing]
+                wrap_with_bookmark(doc, produced, bookmark_name)
             if return_element:
                 elements.extend(block_elems)
             return new_idx, elements
@@ -386,6 +403,9 @@ def process_markdown_block(doc, lines, start_idx, return_element=True,
         # Regular paragraph
         para = doc.add_paragraph()
         parse_inline_formatting(stripped, para)
+        tab_spec = (directives or {}).get('tab')
+        if tab_spec:
+            apply_tab_stop(para, tab_spec)
         _collect(para._p)
         return start_idx + 1, elements
     except Exception as e:
